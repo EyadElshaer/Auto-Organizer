@@ -1,4 +1,13 @@
 # Auto Organizer Changelog
+## v2.0.4 - Bug Fixes and GUI Improvements
+
+### Bug Fixes
+- Fixed error in the Logs tab
+
+### GUI Improvements
+- Logs tab got even prettier
+- Some UI bugs has been fixed and resolved
+
 ## v2.0.3 - Functionality Fixes and Improvements
 
 ### Bug Fixes

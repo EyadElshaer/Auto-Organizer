@@ -1,4 +1,4 @@
-import sys, os, re, json, urllib.request, platform, subprocess, shutil, traceback
+import sys, os, re, json, urllib.request, platform, subprocess, shutil, traceback, threading, webbrowser
 import socket
 import tempfile
 import ctypes
@@ -47,6 +47,7 @@ except Exception as e:
 
 # Import tab modules
 from tabs import MainTab, SettingsTab, LogsTab, AboutTab, load_version
+from tabs.about_tab import fetch_latest_release, remote_is_newer
 
 # Constants
 CONFIG_FILE = os.path.expanduser("~/.watcher_pairs_config.json")
@@ -794,6 +795,13 @@ class WatcherManager:
             if self.polling_timer and self.polling_timer.isActive():
                 self.polling_timer.stop()
 
+
+class _UpdateCheckBridge(QObject):
+    """Passes GitHub release fetch results from a worker thread to the GUI thread."""
+
+    finished = pyqtSignal(object, object)  # release dict | None, error str | None
+
+
 class WatcherApp(QMainWindow):
     logging_signal = pyqtSignal(str, str, str)
 
@@ -884,6 +892,9 @@ class WatcherApp(QMainWindow):
 
         # Setup timers
         self.setup_timers()
+
+        self._update_check_bridge = _UpdateCheckBridge()
+        self._update_check_bridge.finished.connect(self._on_background_update_check_finished)
 
         # Connect initial scan complete signal
         self.file_processor.initial_scan_complete.connect(self.on_initial_scan_complete)
@@ -1157,18 +1168,7 @@ class WatcherApp(QMainWindow):
             }
         """)
         self.main_tab.status.setText("Status: Watching...")
-        self.main_tab.status.setStyleSheet("""
-            QLabel {
-                font-weight: bold;
-                font-size: 14px;
-                padding: 8px;
-                border: 1px solid #4CAF50;
-                border-radius: 4px;
-                background-color: #E8F5E9;
-                color: #2E7D32;
-                margin-top: 10px;
-            }
-        """)
+        self.main_tab.update_status_style()
         self.update_tray_menu()
 
         self.show_notification(
@@ -1331,6 +1331,8 @@ class WatcherApp(QMainWindow):
         self.update_timer.timeout.connect(self.auto_check_for_updates)
         if self.config.get("auto_update_check", True):
             self.update_timer.start(3600000)  # Check every hour
+            # Background check shortly after startup (non-blocking; network runs on a worker thread)
+            QTimer.singleShot(1500, self._run_update_check_async)
 
         # Update version if needed
         current_version = load_version(VERSION_FILE)
@@ -2204,58 +2206,50 @@ class WatcherApp(QMainWindow):
             print(f"Error showing notification: {str(e)}")
 
     def auto_check_for_updates(self):
-        """Automatically check for updates if enabled"""
+        """Automatically check for updates if enabled (hourly timer; non-blocking)."""
+        self._run_update_check_async()
+
+    def _run_update_check_async(self):
+        """Fetch latest release on a background thread; UI updates run on the main thread."""
         if not self.config.get("auto_update_check", True):
             return
 
-        try:
-            with urllib.request.urlopen("https://api.github.com/repos/EyadElshaer/Auto-Organize/releases/latest") as res:
-                data = json.load(res)
-                latest_version = data["tag_name"]
-                current_version = load_version(VERSION_FILE)
+        def task():
+            try:
+                data = fetch_latest_release()
+                self._update_check_bridge.finished.emit(data, None)
+            except Exception as e:
+                self._update_check_bridge.finished.emit(None, str(e))
 
-                # Compare version numbers semantically
-                def parse_version(v):
-                    # Remove 'v' prefix if present and split by dots
-                    return [int(x) for x in v.lstrip('v').split('.')]
+        threading.Thread(target=task, daemon=True).start()
 
-                latest_parts = parse_version(latest_version)
-                current_parts = parse_version(current_version)
+    def _on_background_update_check_finished(self, data, err):
+        """Handle release JSON from background fetch (main thread)."""
+        if err:
+            print(f"Auto update check error: {err}")
+            return
+        if not data:
+            return
+        latest_version = data.get("tag_name")
+        current_version = load_version(VERSION_FILE)
+        if not latest_version or not remote_is_newer(latest_version, current_version):
+            return
 
-                # Pad shorter version with zeros
-                while len(latest_parts) < len(current_parts):
-                    latest_parts.append(0)
-                while len(current_parts) < len(latest_parts):
-                    current_parts.append(0)
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Update Available")
+        msg.setWindowIcon(self.windowIcon())
+        msg.setIcon(QMessageBox.Information)
+        msg.setText(f"A new version {latest_version} is available!")
+        msg.setInformativeText("Would you like to open the release page to download it?")
+        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg.setDefaultButton(QMessageBox.Yes)
 
-                # Compare version parts
-                needs_update = False
-                for i in range(len(latest_parts)):
-                    if latest_parts[i] > current_parts[i]:
-                        needs_update = True
-                        break
-                    elif latest_parts[i] < current_parts[i]:
-                        # Local version is higher than remote
-                        break
-
-                if needs_update:
-                    # Show popup window instead of notification
-                    msg = QMessageBox()
-                    msg.setWindowTitle("Update Available")
-                    msg.setWindowIcon(self.windowIcon())
-                    msg.setIcon(QMessageBox.Information)
-                    msg.setText(f"A new version {latest_version} is available!")
-                    msg.setInformativeText("Would you like to update now?")
-                    msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-                    msg.setDefaultButton(QMessageBox.Yes)
-
-                    if msg.exec_() == QMessageBox.Yes:
-                        # Open the About tab which has the update button
-                        self.tabs.setCurrentWidget(self.about_tab)
-                        self.restore_window()  # Make sure window is visible
-
-        except Exception as e:
-            print(f"Auto update check error: {str(e)}")
+        if msg.exec_() == QMessageBox.Yes:
+            url = data.get("html_url")
+            if url:
+                webbrowser.open(url)
+            self.tabs.setCurrentWidget(self.about_tab)
+            self.restore_window()
 
     def tray_activated(self, reason):
         """Handle system tray icon activation"""

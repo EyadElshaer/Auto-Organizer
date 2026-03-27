@@ -6,6 +6,11 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QIcon, QFont
 from tabs.base_tab import BaseTab
 
+GITHUB_RELEASES_LATEST_API = (
+    "https://api.github.com/repos/EyadElshaer/Auto-Organize/releases/latest"
+)
+
+
 def load_version(version_file):
     """Load version from file"""
     try:
@@ -13,6 +18,47 @@ def load_version(version_file):
             return f.read().strip()
     except:
         return "v0.0.0"
+
+
+def _version_tuple_from_tag(tag):
+    """Parse a semver-like tag (e.g. v2.0.3, 2.0.3-beta) into a tuple of ints."""
+    s = (tag or "").lstrip("v").strip()
+    if not s:
+        return (0,)
+    core = s.split("-")[0].split("+")[0]
+    parts = []
+    for seg in core.split("."):
+        n = 0
+        for ch in seg:
+            if ch.isdigit():
+                n = n * 10 + int(ch)
+            else:
+                break
+        parts.append(n)
+    return tuple(parts) if parts else (0,)
+
+
+def remote_is_newer(remote_tag, local_tag):
+    """True if remote_tag is a strictly newer version than local_tag."""
+    r = _version_tuple_from_tag(remote_tag)
+    l = _version_tuple_from_tag(local_tag)
+    n = max(len(r), len(l))
+    r = r + (0,) * (n - len(r))
+    l = l + (0,) * (n - len(l))
+    return r > l
+
+
+def fetch_latest_release():
+    """GET latest GitHub release JSON (blocking; call from a worker thread for UI apps)."""
+    req = urllib.request.Request(
+        GITHUB_RELEASES_LATEST_API,
+        headers={
+            "User-Agent": "Auto-Organizer (https://github.com/EyadElshaer/Auto-Organize)",
+            "Accept": "application/vnd.github+json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=25) as res:
+        return json.load(res)
 
 def get_resource_path(relative_path):
     """Get the correct resource path in both development and PyInstaller modes"""
@@ -123,33 +169,32 @@ class AboutTab(BaseTab):
     def check_for_updates(self):
         """Check for updates from GitHub"""
         try:
-            with urllib.request.urlopen("https://api.github.com/repos/EyadElshaer/Auto-Organize/releases/latest") as res:
-                data = json.load(res)
-                latest_version = data["tag_name"]
-                current_version = load_version(self.version_file) if self.version_file else "v0.0.0"
-                
-                # Log both versions for debugging
-                print(f"Current version: {current_version}, Latest version: {latest_version}")
-                
-                # Use the main window as parent if available
-                parent = self.parent() if hasattr(self, 'parent') and callable(self.parent) else self
-                
-                if latest_version != current_version:
-                    msg = QMessageBox(parent)
-                    msg.setWindowTitle("Update Available")
-                    msg.setText(f"A new version is available!\n\nCurrent version: {current_version}\nLatest version: {latest_version}")
-                    msg.setInformativeText("Would you like to download the update now?")
-                    msg.setStandardButtons(QMessageBox.No | QMessageBox.Yes)
-                    msg.setDefaultButton(QMessageBox.Yes)
-                    # Make dialog modal to prevent interaction with parent window
-                    msg.setModal(True)
-                    
-                    if msg.exec_() == QMessageBox.Yes:
-                        webbrowser.open(data["html_url"])
-                else:
-                    QMessageBox.information(parent, "Up to Date", f"You're using the latest version ({current_version}).")
+            data = fetch_latest_release()
+            latest_version = data["tag_name"]
+            current_version = load_version(self.version_file) if self.version_file else "v0.0.0"
+
+            print(f"Current version: {current_version}, Latest version: {latest_version}")
+
+            parent = self.parent() if hasattr(self, 'parent') and callable(self.parent) else self
+
+            if remote_is_newer(latest_version, current_version):
+                msg = QMessageBox(parent)
+                msg.setWindowTitle("Update Available")
+                msg.setText(
+                    f"A new version is available!\n\nCurrent version: {current_version}\nLatest version: {latest_version}"
+                )
+                msg.setInformativeText("Would you like to download the update now?")
+                msg.setStandardButtons(QMessageBox.No | QMessageBox.Yes)
+                msg.setDefaultButton(QMessageBox.Yes)
+                msg.setModal(True)
+
+                if msg.exec_() == QMessageBox.Yes:
+                    webbrowser.open(data["html_url"])
+            else:
+                QMessageBox.information(
+                    parent, "Up to Date", f"You're using the latest version ({current_version})."
+                )
         except Exception as e:
-            # Use the main window as parent if available
             parent = self.parent() if hasattr(self, 'parent') and callable(self.parent) else self
             QMessageBox.warning(parent, "Error", f"Failed to check for updates:\n{str(e)}")
             print(f"Update check error: {str(e)}")
