@@ -1,5 +1,5 @@
 #define MyAppName "Auto Organizer"
-#define MyAppVersion "v2.0.2"
+#define MyAppVersion "v2.0.4"
 #define MyAppPublisher "Eyad Elshaer"
 #define MyAppExeName "Auto Organizer.exe"
 
