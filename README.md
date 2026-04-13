@@ -2,6 +2,9 @@
 
 A tool for automatically organizing files based on naming patterns.
 
+# ⚠️ DISCLAIMER
+## It is strongly advised against using this application with large folders and files in the watch directory. Furthermore, please refrain from processing any sensitive or critical data. As this application is not yet fully stable, it may exhibit unexpected behavior.
+
 ## Features
 - Automatically move files between folders based on naming patterns
 - Dark and light theme support
